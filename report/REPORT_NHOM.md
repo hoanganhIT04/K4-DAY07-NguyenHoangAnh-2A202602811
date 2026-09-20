@@ -78,8 +78,8 @@ Chạy `ChunkingStrategyComparator().compare(chunk_size=500)` trên 3 tài liệ
 ### Chiến lược của từng thành viên
 
 **Thành viên 1 — Nguyễn Hà Khuê**
-- **Loại chiến lược:** Custom — `HeadingChunker` (chunking theo heading/section)
-- **Mô tả & lý do chọn cho chủ đề này:** Chính sách Shopee có cấu trúc điều khoản rõ ràng (Điều 1, 2, 3...; mục 1.1, 1.2...) và nhiều bảng quy định — mỗi mục là một quy tắc độc lập. `HeadingChunker` tách tài liệu theo heading markdown, KHÔNG cắt giữa bảng (bảng "Thời gian hoàn tiền", "Điểm khác biệt" luôn nguyên vẹn trong 1 chunk), và prefix tiêu đề mục vào mỗi chunk để embedding mang đủ ngữ cảnh. Khi benchmark, chiến lược này sửa được lỗi Q4 (agent trả lời lệch → khớp gold answer) và đưa chunk đúng của Q2 lên top-1, trong khi chunking theo ký tự để lại lỗi "top-1 sai, top-3 cứu" ở Q1/Q2.
+- **Loại chiến lược:** Custom — `HeadingChunker` (heading đa cấp: markdown + mục đánh số) + retrieval hybrid có LLM rerank
+- **Mô tả & lý do chọn cho chủ đề này:** Chính sách Shopee có cấu trúc điều khoản đánh số rõ ràng (Điều 1, 2, 3...; mục 1.1, 1.2...) và nhiều bảng quy định — mỗi mục là một quy tắc độc lập. `HeadingChunker` nhận diện cả heading markdown lẫn mục đánh số dạng văn bản thuần ("1.2. Thời gian tối đa...") làm ranh giới, giữ bảng markdown nguyên vẹn, và prefix đường dẫn heading đầy đủ vào mỗi chunk. Sau 3 vòng thực nghiệm (ký tự → heading markdown → heading đa cấp + rerank), pipeline đạt 5/5 câu chuẩn 2đ: Q4 sửa lỗi agent trả lời sai ngữ cảnh, Q2/Q3 truy xuất đủ mọi nhánh chi tiết của gold answer.
 - **Code snippet (nếu custom):** xem đầy đủ trong `scripts/benchmark_queries.py`
 ```python
 class HeadingChunker:
@@ -138,12 +138,23 @@ class HeadingChunker:
 
 | Thành viên | Chiến lược (Strategy) | Điểm truy xuất (/10) | Điểm mạnh | Điểm yếu |
 |-----------|----------|----------------------|-----------|----------|
-| Nguyễn Hà Khuê | Custom `HeadingChunker` | 9 | Giữ nguyên bảng quy định; chunk mang ngữ cảnh heading; Q4 khớp gold answer cả 2 phần sau khi fix | Phụ thuộc format markdown gốc; mục rất dài vẫn phải cắt theo đoạn |
-| Nguyễn Hoàng Anh | Recursive | 8 | Chia chunk theo cấu trúc đệ quy; Top-3 truy xuất được nội dung liên quan ở 4/5 câu, bao gồm Q1, Q2, Q3 và Q5 |Q4 chưa truy xuất được đúng nội dung về thời hạn khiếu nại và bằng chứng; một số câu có Top-1 chưa liên quan nhưng chunk đúng xuất hiện ở Top-2/Top-3 |
+| Nguyễn Hà Khuê | Custom `HeadingChunker` + hybrid LLM rerank | 10 | Chunk mang ngữ cảnh heading đầy đủ; bảng nguyên vẹn; rerank sửa lỗi "chunk đúng bị đẩy xuống top-3"; benchmark 5/5 câu đạt 2đ | Phụ thuộc format markdown + đánh số của tài liệu gốc; tốn thêm 1 call LLM cho rerank |
+| Nguyễn Hoàng Anh | Recursive | 1 | Chia chunk theo cấu trúc đệ quy, giúp giữ các đoạn văn và điều kiện liên quan trong cùng chunk | MockEmbedder chưa biểu diễn tốt ngữ nghĩa tiếng Việt, nên nhiều câu hỏi không truy xuất được chunk liên quan trong Top-3 |
 |  Nguyễn Huy Hoàng | SentenceChunker | 8 | Top-3 có thông tin liên quan ở 5/5 câu; câu 2 lấy được cả ngoại lệ thời hạn | Câu 3 thiếu yêu cầu chất lượng và giới hạn video; câu 5 thiếu thời gian hoàn phí và mức Xu |
 
 **Chiến lược nào tốt nhất cho chủ đề này? Tại sao?**
 > Với domain chính sách/các quy định, chunking theo heading/section là tốt nhất. Lý do: (1) mỗi mục của chính sách là một quy tắc độc lập với thời hạn/điều kiện riêng — tách đúng ranh giới mục giúp một chunk chứa trọn vẹn một quy tắc, tránh trả lời ghép nhầm điều kiện của mục khác; (2) các bảng quy định (thời gian hoàn tiền, phí trả hàng, bảng so sánh trước/sau) chứa câu trả lời dạng số liệu nhưng bị cắt làm hỏng ngữ nghĩa khi chunk theo ký tự — giữ nguyên bảng cộng với prefix heading giúp embedding khớp câu hỏi tự nhiên hơn nhiều (đo bằng thực nghiệm: Q4 từ "lệch" → khớp gold answer, Q2 chunk đúng từ hạng 3 → top-1); (3) prefix heading còn giúp truy vết nguồn dễ dàng khi demo. Chiến lược theo ký tự (fixed_size) chỉ phù hợp làm baseline để thấy rõ khác biệt.
+
+### Failure Case tiêu biểu (chi tiết đầy đủ trong REPORT_CANHAN của từng thành viên)
+
+**Failure case 1 — bảng bị cắt làm mất ngữ nghĩa (chunking theo ký tự):**
+Bảng "Phương thức thanh toán → Thời gian hoàn tiền" trong tài liệu *Thời gian nhận tiền hoàn* chứa câu trả lời của benchmark Q1 ("Ví ShopeePay: 24 giờ"). Chunk theo ký tự làm bảng thành dòng rời rạc, chunk chứa bảng chỉ xếp hạng 3 (0.6648) sau chunk "⚠️ Lưu ý" (0.6665) — chunk này chứa dày đặc từ "hoàn tiền/khiếu nại" nên embedding cao dù KHÔNG trả lời được câu hỏi. Với top_k=1 pipeline sẽ trả lời sai. **Nguyên nhân:** nội dung bảng không có cấu trúc câu tự nhiên; các bullet ghi chú trùng từ khóa query. **Đã fix:** giữ bảng nguyên vẹn trong 1 chunk + LLM rerank đưa chunk bảng lên top-1.
+
+**Failure case 2 — rerank bỏ sót chunk mạnh (regression thật khi fix):**
+Khi thêm tầng LLM rerank, ở Q4 rerank một lần đã chọn các chunk của doc Shopee Mall và bỏ sót chunk embedding top-1 (bảng "Thông tin / Chi tiết" chứa deadline "2 ngày") — câu trả lời mất luôn mốc thời gian. **Nguyên nhân:** rerank của LLM không tương quan tuyệt đối với độ khớp embedding; chunk "nhiều chữ giống câu hỏi" lấn át. **Đã fix:** hybrid — luôn giữ chunk embedding top-1 trong top-3 sau rerank. Bài học: mọi tầng tự động (kể cả LLM) đều cần cơ chế dự phòng.
+
+**Failure case 3 — heading dạng đánh số "vô hình":**
+Shopee viết cấu trúc bằng mục đánh số thuần ("1.2. Thời gian tối đa...") chứ không phải markdown `#` — chunker markdown không nhận ra, dẫn tới Q2 thiếu nhánh "người bán tự vận chuyển 15/20 ngày". **Đã fix:** nhận diện pattern số `1.2.` (ngắn, không kết thúc dấu câu) làm ranh giới mục, kế thừa heading cha.
 
 ---
 
@@ -158,36 +169,43 @@ class HeadingChunker:
 | 1 | Tiền hoàn qua Ví ShopeePay sẽ nhận được trong bao lâu? | 24 giờ kể từ khi Shopee chấp nhận hoàn tiền, với điều kiện Ví ShopeePay vẫn hoạt động bình thường | shopee-refund-time — bảng phương thức hoàn tiền (dòng COD/QR → Ví ShopeePay) |
 | 2 | Trong bao nhiêu ngày kể từ khi giao hàng thành công, người mua vẫn có thể gửi yêu cầu Trả hàng/Hoàn tiền? | 15 ngày kể từ khi đơn cập nhật "Giao hàng thành công" (riêng thực phẩm tươi sống/đông lạnh: 24 giờ; đơn người bán tự vận chuyển: 15 ngày từ khi bấm "Đã nhận được hàng" hoặc 20 ngày từ "Lấy hàng thành công") | shopee-return-refund-rules — mục 1.2 "Thời gian tối đa để gửi yêu cầu" |
 | 3 | Video mở kiện hàng cần đảm bảo những yêu cầu gì để được chấp nhận làm bằng chứng? | Quay xuyên suốt, liên tục, không cắt ghép; góc quay rõ, không khuất; chất lượng tốt, không mờ nhòe; thể hiện rõ 6 mặt kiện hàng, mã vận đơn khớp đơn hàng và tình trạng sản phẩm (niêm phong, tem nhãn). Video tối đa 100 MB / 1 phút | shopee-return-evidence — mục 2 + mục 4 "Quy định về bằng chứng" |
-| 4 | Sau khi nhận hàng hoàn trả, cần khiếu nại trong bao lâu và cần bằng chứng gì? *(chạy kèm `metadata_filter={"audience": "seller"}` — câu hỏi không nêu rõ ai hỏi, corpus có tài liệu cùng chủ đề nhưng khác đối tượng, không lọc sẽ lẫn tài liệu buyer)* | Người bán có 2 ngày để khiếu nại kể từ khi nhận hàng hoàn thành công hoặc sau ngày nhận hàng hoàn dự kiến; bằng chứng là video mở hàng thể hiện tình trạng sản phẩm nhận được | shopee-seller-mall-return-process — mục 2, bảng "Điểm khác biệt"; shopee-seller-return-refund-process — mục B (bảng "Thông tin / Chi tiết") |
+| 4 | Sau khi nhận hàng hoàn trả, cần khiếu nại trong bao lâu và cần bằng chứng gì? | Người bán có 2 ngày để khiếu nại kể từ khi nhận hàng hoàn thành công hoặc sau ngày nhận hàng hoàn dự kiến; bằng chứng là video mở hàng thể hiện tình trạng sản phẩm nhận được | shopee-seller-mall-return-process — mục 2, bảng "Điểm khác biệt"; shopee-seller-return-refund-process — mục B (bảng "Thông tin / Chi tiết") |
 | 5 | Nếu chọn hình thức Tự sắp xếp để gửi hàng hoàn trả, phí trả hàng có được hoàn lại không? | Có — Shopee hỗ trợ phí trả hàng trong 3-5 ngày làm việc sau khi yêu cầu được chấp nhận: đơn Shopee Mall hoàn trực tiếp; ngoài Mall hoàn bằng Shopee Xu (25.000 Xu cùng tỉnh/thành phố với người bán, 40.000 Xu khác tỉnh) | shopee-return-shipping — mục 2.2 "Phí vận chuyển trả hàng" |
 
 ### Tổng hợp chất lượng truy xuất của nhóm
 
 > Cách chấm (theo `docs/SCORING.md`): **2 điểm/câu** — top-3 chứa chunk liên quan + agent trả lời đúng (2), có liên quan nhưng thiếu/không ở top-1 (1), không có trong top-3 (0).
 
+
 | # | Câu hỏi | Chiến lược tốt nhất cho câu này | Có chunk liên quan trong top-3? | Ghi chú |
 |---|---------|-------------------------------|-------------------------------|---------|
-| 1 |Tiền hoàn qua Ví ShopeePay sẽ nhận được trong bao lâu?| | | |
-| 2 |Trong bao nhiêu ngày kể từ khi giao hàng thành công, người mua vẫn có thể gửi yêu cầu Trả hàng/Hoàn tiền?| | | |
-| 3 |Video mở kiện hàng cần đảm bảo những yêu cầu gì để được chấp nhận làm bằng chứng?| | | |
-| 4 |Sau khi nhận hàng hoàn trả, cần khiếu nại trong bao lâu và cần bằng chứng gì?| | | |
-| 5 |Nếu chọn hình thức Tự sắp xếp để gửi hàng hoàn trả, phí trả hàng có được hoàn lại không?| | | |
+| 1 | Tiền hoàn qua Ví ShopeePay sẽ nhận được trong bao lâu? | HeadingChunker + hybrid rerank (Khuê) | Có (Khuê: top-1 sau rerank) | Không rerank thì bảng chứa đáp án chỉ ở hạng 3 — chunk "Lưu ý" nhiễu từ khóa thắng |
+| 2 | Trong bao nhiêu ngày kể từ khi giao hàng thành công, người mua vẫn có thể gửi yêu cầu Trả hàng/Hoàn tiền? | HeadingChunker + hybrid rerank (Khuê) | Có (Khuê: top-1) | Rerank đưa chunk "1.2 Thời gian tối đa" vào top-3 → agent trả lời đủ cả 3 nhánh thời hạn |
+| 3 | Video mở kiện hàng cần đảm bảo những yêu cầu gì để được chấp nhận làm bằng chứng? | HeadingChunker (Khuê) | Có (Khuê: 2/3 top-3 cùng doc evidence) | Prompt "rà từng chunk" giúp agent tự lấy thêm giới hạn 100MB/1 phút ở chunk hạng 2 |
+| 4 | Sau khi nhận hàng hoàn trả, cần khiếu nại trong bao lâu và cần bằng chứng gì? | HeadingChunker + filter seller + hybrid rerank (Khuê) | Có (Khuê: cả top-3 là doc seller) | Không filter → 2/3 top-3 là chunk buyer; filter là điều kiện bắt buộc để trả lời đúng đối tượng |
+| 5 | Nếu chọn hình thức Tự sắp xếp để gửi hàng hoàn trả, phí trả hàng có được hoàn lại không? | HeadingChunker (Khuê) | Có (Khuê: top-1) | Agent trả lời đủ 3-5 ngày + phân biệt Mall / Shopee Xu 25k-40k |
+
+Kết quả chi tiết từng thành viên xem trong file `ket_qua_benchmark.txt` của mỗi người (nộp kèm).
 
 **Lọc bằng metadata có giúp ích không? Ở câu hỏi nào?**
-> *Viết 2-3 câu:*
+> Có — ở câu 4. Câu hỏi không nêu rõ người hỏi là ai, trong khi corpus có tài liệu cùng chủ đề nhưng khác đối tượng: doc buyer nói "gửi hàng hoàn trong 6 ngày", doc seller nói "khiếu nại trong 2 ngày". Không lọc, top-3 lẫn 2 chunk audience=buyer và agent mất đi ngữ cảnh đúng. Với filter `audience=seller`, cả top-3 đều là tài liệu hướng người bán và agent trả lời đúng "2 ngày + bằng chứng mở hàng". Bài học: khi corpus phục vụ nhiều đối tượng, metadata filter không phải tùy chọn mà là điều kiện để câu trả lời đúng.
 
 ---
 
 ## 4. Thuyết trình (Demo) & Bài học nhóm — Nhóm (5 điểm)
 
 **Những phân tích (insights) hay nhất nhóm sẽ trình bày:**
-> *Liệt kê 2-3 ý:*
+- **Embedding hiểu chủ đề nhưng không hiểu phủ định:** hai câu trái ý ("Shopee không hỗ trợ đổi hàng" vs "Shopee hỗ trợ hoàn tiền ngay") có cosine 0.71 — similarity thuần túy không phân biệt được điều kiện áp dụng với trường hợp loại trừ.
+- **Metadata filter là bắt buộc, không phải tùy chọn:** benchmark Q4 (không nêu ai hỏi) không lọc `audience` thì top-3 lẫn 2 chunk buyer — corpus đa đối tượng cần filter để trả lời đúng người.
+- **Lỗi RAG nằm rải rác ở nhiều tầng:** cùng một hệ thống, sửa chunking (heading đa cấp) chỉ giải quyết một nửa lỗi; phải thêm rerank + chỉnh prompt mới đạt 10/10. Demo từng tầng score/rank giúp chỉ ra chính xác tầng nào gây lỗi.
 
 **Bài học rút ra khi so sánh trong nhóm:**
-> *Viết 2-3 câu — cùng tài liệu nhưng chiến lược khác nhau dẫn tới khác biệt gì?*
+> Cùng bộ 9 tài liệu Shopee nhưng chiến lược khác nhau cho kết quả chênh lệch rất lớn: chunking theo ký tự (fixed_size) cắt hỏng bảng quy định và không nhận diện được điều khoản đánh số; RecursiveChunker bám sát đoạn văn hơn nhưng vẫn "mù" cấu trúc; HeadingChunker + rerank đạt 5/5 câu chuẩn 2đ. Khác biệt không nằm ở embedding model (ai cũng dùng text-embedding-3-small) mà nằm ở **cách chuẩn bị dữ liệu**: một chunk phải chứa trọn vẹn một quy tắc và mang đủ ngữ cảnh (heading path) thì embedding mới khớp câu hỏi tự nhiên.
+
+**Failure case nhóm chọn để demo:** Q4 "Sau khi nhận hàng hoàn trả, cần khiếu nại trong bao lâu và cần bằng chứng gì?" — câu hỏi không nêu ai hỏi, corpus có 2 tài liệu cùng từ vựng nhưng khác đáp án (buyer: gửi hàng trong 6 ngày; seller: khiếu nại trong 2 ngày). Không lọc metadata, retrieval lẫn tài liệu buyer; thêm regression khi thêm rerank (rerank bỏ sót chunk chứa deadline). Chỉ khi kết hợp cả filter `audience` + hybrid rerank + prompt "rà từng chunk" câu trả lời mới khớp gold answer cả 2 phần. Đây là ví dụ trọn vẹn cho thấy độ chính xác phụ thuộc **chuỗi các tầng**, không phải một tầng duy nhất.
 
 **Nếu làm lại, nhóm sẽ thay đổi gì trong chiến lược dữ liệu (data strategy)?**
-> *Viết 2-3 câu:*
+> (1) Giữ cấu trúc tài liệu ngay từ khâu thu thập: chuyển bảng sang format bảng markdown thật thay vì dòng rời rạc, và giữ nguyên đánh số điều khoản — dữ liệu đầu vào sạch thì mọi chiến lược chunking phía sau đều đỡ tốn công sửa. (2) Thêm 2-3 tài liệu hướng người bán ngay từ đầu để filter `audience` có ý nghĩa từ vòng benchmark đầu tiên thay vì phải bổ sung sau. (3) Viết benchmark script trước khi thu thập dữ liệu: biết trước cần đo gì (top-1 vs top-3, đủ nhánh chi tiết) sẽ định hình được corpus cần những gì.
 
 ---
 
@@ -195,8 +213,8 @@ class HeadingChunker:
 
 | Tiêu chí | Điểm tự đánh giá |
 |----------|-------------------|
-| Lựa chọn tài liệu (Document Set Quality) | / 10 |
-| Thiết kế chiến lược (Strategy Design) | / 15 |
-| Chất lượng truy xuất (Retrieval Quality) | / 10 |
-| Thuyết trình (Demo) | / 5 |
-| **Tổng phần nhóm** | **/ 40** |
+| Lựa chọn tài liệu (Document Set Quality) | 10 / 10 |
+| Thiết kế chiến lược (Strategy Design) | 15 / 15 |
+| Chất lượng truy xuất (Retrieval Quality) | 10 / 10 |
+| Thuyết trình (Demo) |5 / 5 |
+| **Tổng phần nhóm** | **40 / 40** |
