@@ -1,0 +1,25 @@
+======================================================================
+EMBEDDING CONFIGURATION
+======================================================================
+Embedding provider: Gemini
+Embedding model: gemini-embedding-001
+Embedding mode: batched
+
+======================================================================
+LOADING CORPUS
+======================================================================
+shopee-refund-time.md: 10 chunks
+shopee-return-evidence.md: 7 chunks
+shopee-return-refund-policy.md: 60 chunks
+shopee-return-refund-process.md: 20 chunks
+shopee-return-refund-request.md: 5 chunks
+shopee-return-refund-rules.md: 14 chunks
+shopee-return-shipping.md: 14 chunks
+shopee-seller-mall-return-process.md: 20 chunks
+shopee-seller-return-refund-process.md: 21 chunks
+
+Total chunks: 171
+
+======================================================================
+GENERATING GEMINI EMBEDDINGS
+======================================================================
